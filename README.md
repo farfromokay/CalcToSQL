@@ -73,7 +73,7 @@ Hints are added in square brackets `[]` at the end of the column header text in 
 * `Column Name [fk:OtherTable(other_column)]` - Creates a foreign key constraint referencing `other_column` in `OtherTable`. Table and column names are case-sensitive as provided here.
 * `Column Name [tsc]` - Sets the column type to `TIMESTAMP DEFAULT CURRENT_TIMESTAMP` and excludes it from `INSERT` statements. Data type inference is skipped for this column.
 
-**Example Header:** `user_id [pk, fk:users(id), idx:user_lookup]`
+**Example Header:** `user_id [fk:user(id), idx:user_lookup]`
 
 ## Configuration (`_CalcToSQL` Sheet)
 
