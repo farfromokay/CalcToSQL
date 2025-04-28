@@ -124,4 +124,4 @@ This project is licensed under the MIT License. See the license text included in
 
 ## Author
 
-* FarFromOkay (Replace with your name/handle if desired)
+* FarFromOkay
