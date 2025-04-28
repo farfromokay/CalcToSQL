@@ -55,6 +55,13 @@ It allows for configuration via a dedicated sheet (`_CalcToSQL`) and uses simple
 7.  A "Save As" dialog will appear. Choose a location and filename for the output `.sql` file.
 8.  A confirmation message box will appear upon completion, showing statistics.
 
+**Example File:**
+
+An example spreadsheet, `CalcToSQL_Example.ods`, is included in the repository. It demonstrates:
+* A barebones sample data sheet named `Sheet1` with a single column header `Col1` and data values 1 through 5.
+* A pre-configured `_CalcToSQL` sheet showing examples of the `Settings` and `Hints` sections.
+You can use this file to test the macro and see the configuration options in action.
+
 ## Sheet Formatting
 
 * **Sheet Names:** Each sheet name (that doesn't start with `_`) becomes a table name. Special characters in sheet names might cause issues; stick to alphanumeric names and underscores.
@@ -117,4 +124,4 @@ This project is licensed under the MIT License. See the license text included in
 
 ## Author
 
-* FarFromOkay
+* FarFromOkay (Replace with your name/handle if desired)
