@@ -1,4 +1,4 @@
-' CalcToSQL v1.0 - Initial public release with TSC hint support
+' CalcToSQL v1.0.1
 '
 ' MIT License
 '
@@ -399,6 +399,7 @@ Sub CalcToSQL()
         For k = 0 To nValidColCount - 1
             ' Only infer type if it's not a TSC column
             If Not aColumns(k).IsTSC Then
+                ' *** CALL CORRECTED InferColumnType ***
                 aColumns(k).InferredDataType = InferColumnType(oSheet, aColumns(k).OriginalIndex, 1, nTrueLastRow, oNumFormats)
             Else
                 aColumns(k).InferredDataType = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" ' Set type directly for TSC
@@ -559,6 +560,7 @@ Sub CalcToSQL()
                     nCol = aColumns(j).OriginalIndex
                     oCell = oSheet.getCellByPosition(nCol, nRow)
                      If bNeedComma Then sValuesPart = sValuesPart & ", "
+                    ' *** CALL CORRECTED FormatSQLValue (v4) ***
                     sValuesPart = sValuesPart & FormatSQLValue(oCell, oNumFormats)
                     bNeedComma = True
                 End If
@@ -879,11 +881,13 @@ End Function
 
 ' --- Helper Function to Infer SQL Data Type by Scanning Column Data ---
 ' NOTE: This function is NOT called for columns marked with the TSC hint.
+' CORRECTED VERSION: Prioritizes getString() for formulas to avoid misinterpreting string results as numbers.
 Function InferColumnType(oSheet As Object, nColIndex As Integer, nStartDataRow As Integer, nTrueEndRow As Long, oNumFormats As Object) As String
     Dim nRow As Long
     Dim oCell As Object
     Dim cellType As Integer
     Dim val As Variant
+    Dim sCellValue As String ' Added to store string value directly
     Dim nFormatId As Long
     Dim oFormatProps As Object
 
@@ -947,49 +951,62 @@ Function InferColumnType(oSheet As Object, nColIndex As Integer, nStartDataRow A
 
                  Case com.sun.star.table.CellContentType.FORMULA
                     If oCell.getError() = 0 Then
-                         val = oCell.getValue() ' Get result value
-                         If Trim(oCell.getString()) = "" Then
-                             ' Skip empty string results, don't change type inference
-                         ElseIf Not IsNumeric(val) And Not IsDate(val) Then
-                             hasText = True : Exit For ' Treat non-numeric/non-date formula result as text
-                         Else ' Result is numeric or date-like
-                             nFormatId = oCell.NumberFormat
-                             On Error Resume Next
-                             oFormatProps = oNumFormats.getByKey(nFormatId)
-                             On Error GoTo 0 ' Reset error handling
+                        val = oCell.getValue() ' Get numeric/date value if applicable
+                        sCellValue = Trim(oCell.getString()) ' Get string representation
 
-                             If Not IsEmpty(oFormatProps) And Not IsNull(oFormatProps) Then
-                                 If (oFormatProps.Type AND com.sun.star.util.NumberFormat.DATE) <> 0 OR _
-                                    (oFormatProps.Type AND com.sun.star.util.NumberFormat.DATETIME) <> 0 OR _
-                                    (oFormatProps.Type AND com.sun.star.util.NumberFormat.TIME) <> 0 Then
-                                      hasDateTime = True
-                                 ElseIf IsNumeric(val) Then
-                                     If val <> Fix(val) Then
-                                         hasDecimal = True
-                                     Else
-                                         hasInteger = True
+                        If sCellValue = "" Then
+                            ' Skip empty string results, don't change type inference
+                        Else
+                            ' --- Prioritize String Check ---
+                            ' Check if the string result *looks* like a number or date.
+                            ' If not, it's definitely text.
+                            If Not IsNumeric(sCellValue) And Not IsDate(sCellValue) Then
+                                 hasText = True
+                                 Exit For ' Found text, no need to check further in this column
+                            Else
+                                ' String result looks numeric or date-like. Now check format/value for specifics.
+                                nFormatId = oCell.NumberFormat
+                                On Error Resume Next
+                                oFormatProps = oNumFormats.getByKey(nFormatId)
+                                On Error GoTo 0 ' Reset error handling
+
+                                Dim isDateType As Boolean : isDateType = False
+                                Dim isNumericType As Boolean : isNumericType = False
+
+                                If Not IsEmpty(oFormatProps) And Not IsNull(oFormatProps) Then
+                                    If (oFormatProps.Type AND com.sun.star.util.NumberFormat.DATE) <> 0 OR _
+                                       (oFormatProps.Type AND com.sun.star.util.NumberFormat.DATETIME) <> 0 OR _
+                                       (oFormatProps.Type AND com.sun.star.util.NumberFormat.TIME) <> 0 Then
+                                        isDateType = True
+                                    ElseIf (oFormatProps.Type AND com.sun.star.util.NumberFormat.NUMBER) <> 0 OR _
+                                           (oFormatProps.Type AND com.sun.star.util.NumberFormat.CURRENCY) <> 0 OR _
+                                           (oFormatProps.Type AND com.sun.star.util.NumberFormat.PERCENT) <> 0 OR _
+                                           (oFormatProps.Type AND com.sun.star.util.NumberFormat.FRACTION) <> 0 Then
+                                         isNumericType = True
+                                    ' Else: Format is General, Text, etc. - rely on value check below
+                                    End If
+                                End If ' End format check
+
+                                ' Refine based on format or value if format wasn't decisive
+                                If isDateType Then
+                                     hasDateTime = True
+                                ElseIf isNumericType Then ' Format explicitly numeric
+                                     If val <> Fix(val) Then hasDecimal = True Else hasInteger = True
+                                     If val < 0 Then hasNegativeInteger = True
+                                Else ' Format wasn't decisive (or no format info) - check value type
+                                     If IsDate(val) Then ' Check underlying value first
+                                         hasDateTime = True
+                                     ElseIf IsNumeric(val) Then ' Check underlying value
+                                         If val <> Fix(val) Then hasDecimal = True Else hasInteger = True
                                          If val < 0 Then hasNegativeInteger = True
+                                     Else
+                                         ' If string looked numeric/date but value isn't, treat as text (fallback)
+                                         hasText = True : Exit For
                                      End If
-                                 Else ' Should not happen based on earlier check, but fallback
-                                     hasText = True : Exit For
-                                 End If
-                             Else ' No format info for formula result
-                                  If IsDate(val) Then ' Check if value itself is date-like
-                                      hasDateTime = True
-                                  ElseIf IsNumeric(val) Then
-                                      If val <> Fix(val) Then
-                                          hasDecimal = True
-                                      Else
-                                          hasInteger = True
-                                          If val < 0 Then hasNegativeInteger = True
-                                      End If
-                                  Else ' Fallback if neither numeric nor date
-                                      hasText = True
-                                      Exit For
-                                  End If
-                             End If
-                         End If
-                    Else ' Formula resulted in an error, treat as text potential
+                                End If
+                            End If ' End check: If Not IsNumeric(sCellValue)...
+                        End If ' End check: sCellValue = ""
+                    Else ' Formula resulted in an error
                          hasText = True : Exit For
                     End If
             End Select ' End Select cellType
@@ -1019,6 +1036,7 @@ End Function
 
 
 ' --- Helper Function to Format Cell Value for SQL ---
+' CORRECTED VERSION (v4): Stronger prioritization of getString() for formulas.
 Function FormatSQLValue(oCell As Object, oNumFormats As Object) As String
     Dim sResult As String
     Dim nFormatId As Long
@@ -1031,6 +1049,7 @@ Function FormatSQLValue(oCell As Object, oNumFormats As Object) As String
     Select Case oCell.getType()
         Case com.sun.star.table.CellContentType.EMPTY
             sResult = "NULL"
+
         Case com.sun.star.table.CellContentType.VALUE
             val = oCell.getValue()
             nFormatId = oCell.NumberFormat
@@ -1048,7 +1067,6 @@ Function FormatSQLValue(oCell As Object, oNumFormats As Object) As String
                      ' Use Str() for numbers to avoid locale issues with decimal points
                      sResult = Trim(Str(val))
                      ' Basic standardisation - ensure '.' is decimal separator if needed
-                     ' (Str() usually uses '.', but this is a safeguard)
                      sResult = Replace(sResult, ",", ".")
                  Else ' Treat as text if format is not date/time and value isn't numeric
                      sCellValue = oCell.getString()
@@ -1065,6 +1083,7 @@ Function FormatSQLValue(oCell As Object, oNumFormats As Object) As String
                      sResult = "'" & Replace(sCellValue, "'", "''") & "'"
                  End If
             End If
+
         Case com.sun.star.table.CellContentType.TEXT
             sCellValue = oCell.getString()
             If UCase(Trim(sCellValue)) = "NULL" Then ' Allow explicit NULL keyword in text cells
@@ -1072,51 +1091,64 @@ Function FormatSQLValue(oCell As Object, oNumFormats As Object) As String
             Else
                 sResult = "'" & Replace(sCellValue, "'", "''") & "'" ' Escape single quotes
             End If
+
         Case com.sun.star.table.CellContentType.FORMULA
+            ' --- Start v4 Correction for FORMULA ---
             If oCell.getError() <> 0 Then
                  sResult = "NULL" ' Treat formula errors as NULL
             Else
-                val = oCell.getValue() ' Get the formula result value
-                sCellValue = oCell.getString() ' Also get string representation
+                ' Always get the string value first for formulas
+                sCellValue = oCell.getString()
 
-                ' Treat formula evaluating to "" as NULL for SQL
+                ' Handle empty or explicit "NULL" string results
                 If Trim(sCellValue) = "" Then
                     sResult = "NULL"
-                ElseIf UCase(Trim(sCellValue)) = "NULL" Then ' Allow formula result to be explicit "NULL" text
+                ElseIf UCase(Trim(sCellValue)) = "NULL" Then
                     sResult = "NULL"
                 Else
+                    ' Get underlying value and format info
+                    val = oCell.getValue()
                     nFormatId = oCell.NumberFormat
-                    On Error Resume Next ' Attempt to get format properties
-                    oFormatProps = oNumFormats.getByKey(nFormatId)
-                    On Error GoTo FormatErrorHandler ' Re-enable error handler
+                    Dim formatIsDateTime As Boolean : formatIsDateTime = False
+                    Dim formatIsNumeric As Boolean : formatIsNumeric = False
 
-                    If Not IsEmpty(oFormatProps) And Not IsNull(oFormatProps) Then
+                    On Error Resume Next
+                    oFormatProps = oNumFormats.getByKey(nFormatId)
+                    If Err.Number = 0 And Not IsEmpty(oFormatProps) And Not IsNull(oFormatProps) Then
                          ' Check format type for Date/Time
                          If (oFormatProps.Type AND com.sun.star.util.NumberFormat.DATE) <> 0 OR _
                            (oFormatProps.Type AND com.sun.star.util.NumberFormat.DATETIME) <> 0 OR _
                            (oFormatProps.Type AND com.sun.star.util.NumberFormat.TIME) <> 0 Then
-                             sResult = "'" & Format(val, "YYYY-MM-DD HH:MM:SS") & "'"
-                         ElseIf IsNumeric(val) Then
-                             ' Format as number
-                             sResult = Trim(Str(val))
-                             sResult = Replace(sResult, ",", ".")
-                         Else
-                             ' If format is not date/time/numeric, treat as text
-                             sResult = "'" & Replace(sCellValue, "'", "''") & "'"
+                            formatIsDateTime = True
+                         ' Check if format is explicitly numeric (excluding boolean, scientific etc.)
+                         ElseIf (oFormatProps.Type AND com.sun.star.util.NumberFormat.NUMBER) <> 0 OR _
+                                (oFormatProps.Type AND com.sun.star.util.NumberFormat.CURRENCY) <> 0 OR _
+                                (oFormatProps.Type AND com.sun.star.util.NumberFormat.PERCENT) <> 0 OR _
+                                (oFormatProps.Type AND com.sun.star.util.NumberFormat.FRACTION) <> 0 Then
+                            formatIsNumeric = True
                          End If
-                    Else ' Fallback if format info not available for formula result
-                         If IsDate(val) Then
-                             sResult = "'" & Format(val, "YYYY-MM-DD HH:MM:SS") & "'"
-                         ElseIf IsNumeric(val) Then
-                              sResult = Trim(Str(val))
-                              sResult = Replace(sResult, ",", ".")
-                         Else
-                              ' Fallback: treat as text, already checked for "" and "NULL" above
-                              sResult = "'" & Replace(sCellValue, "'", "''") & "'"
-                         End If
+                    End If
+                    On Error GoTo FormatErrorHandler ' Re-enable default handler
+
+                    ' Decision Logic:
+                    ' 1. If format is Date/Time AND value is date -> Use formatted date value
+                    ' 2. Else If format is Numeric AND value is numeric AND string matches numeric -> Use numeric value
+                    ' 3. Else (Default) -> Use string value
+                    If formatIsDateTime And IsDate(val) Then
+                        sResult = "'" & Format(val, "YYYY-MM-DD HH:MM:SS") & "'"
+                    ElseIf formatIsNumeric And IsNumeric(val) And (Trim(Str(val)) = sCellValue) Then
+                        ' Only format as number if the string representation exactly matches the numeric value
+                        sResult = Trim(Str(val))
+                        sResult = Replace(sResult, ",", ".")
+                    Else
+                        ' Default to using the string value for General format, Text format,
+                        ' or when numeric value/string representation mismatch (e.g., "player1" vs 0)
+                        sResult = "'" & Replace(sCellValue, "'", "''") & "'"
                     End If
                 End If ' End check for Trim(sCellValue) = "" or "NULL"
             End If ' End check oCell.getError() <> 0
+            ' --- End v4 Correction for FORMULA ---
+
         Case Else
             ' Any other cell type (e.g., Error) treat as NULL
             sResult = "NULL"
